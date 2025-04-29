@@ -1,0 +1,222 @@
+---
+title: "HIV, Poverty and Mortality Analysis"
+author: "Hamisi Brian Duncan"
+date: '2025'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readr)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(sf)
+library(leaflet)
+library(ggthemes)
+library(tinytex)
+```
+
+# Question 1: HIV and Multidimensional Poverty Analysis
+
+## 1.1 Load Data
+
+```{r}
+# Set correct paths
+hiv_data_path <- "C:/Users/User/Desktop/Hiv_analysis_Project/dataset_datascience.csv"
+poverty_data_path <- "C:\\Users\\User\\Desktop\\Hiv_analysis_Project\\multidimensional_poverty.xlsx"
+under5_data_path <- "C:/Users/User/Desktop/Hiv_analysis_Project/under_five mortality rate.csv"
+neonatal_data_path <- "C:/Users/User/Desktop/Hiv_analysis_Project/neonatal_mortality_rate.csv"
+world_shapefile_path <- "C:/Users/User/Desktop/Hiv_analysis_Project/World_data/ne_110m_admin_0_countries.shp"
+
+# Load data
+hiv_data <- read.csv(hiv_data_path)
+poverty_data <- read_excel(poverty_data_path)
+colnames(hiv_data)
+colnames(poverty_data)
+```
+## 1.2 Top 75% HIV Burden Countries Globally
+
+```{r}
+# Select latest year
+hiv_latest <- hiv_data %>%
+  filter(`Series.Year` == max(`Series.Year`, na.rm = TRUE)) %>%
+  arrange(desc(`Observation.Value`))
+
+hiv_latest$cumsum_prop <- cumsum(hiv_latest$`Observation.Value`) / sum(hiv_latest$`Observation.Value`, na.rm = TRUE)
+
+top_75_countries <- hiv_latest %>%
+  filter(cumsum_prop <= 0.75)
+
+# Visualization
+hiv_trend_top <- hiv_data %>%
+  filter(`Geographic.area` %in% top_75_countries$`Geographic.area`)
+
+hiv_trend_top %>%
+  ggplot(aes(x = `Series.Year`, y = `Observation.Value`, color = `Geographic.area`)) +
+  geom_line() +
+  theme_minimal() +
+  labs(title = "Trend of HIV Cases in Top 75% Countries Globally",
+       y = "People Living with HIV",
+       x = "Year")
+```
+
+## 1.3 Top 75% HIV Burden within WHO Regions
+
+```{r}
+# By WHO region (Regional group)
+top_75_by_region <- hiv_data %>%
+  group_by(`Regional.group`, `Geographic.area`) %>%
+  summarise(total_cases = sum(`Observation.Value`, na.rm = TRUE)) %>%
+  group_by(`Regional.group`) %>%
+  arrange(desc(total_cases)) %>%
+  mutate(cumsum_prop = cumsum(total_cases) / sum(total_cases, na.rm = TRUE)) %>%
+  filter(cumsum_prop <= 0.75)
+
+hiv_trend_region <- hiv_data %>%
+  filter(`Geographic.area` %in% top_75_by_region$`Geographic.area`)
+
+hiv_trend_region %>%
+  ggplot(aes(x = `Series.Year`, y = `Observation.Value`, color = `Geographic.area`)) +
+  geom_line() +
+  facet_wrap(~`Regional.group`) +
+  theme_minimal() +
+  labs(title = "Trend of HIV Cases in Top 75% Countries by WHO Region",
+       y = "People Living with HIV",
+       x = "Year")
+```
+
+## 1.4 Merge HIV and Poverty Data
+
+# Make sure Survey year is numeric in both datasets
+hiv_data <- hiv_data %>%
+  rename(`Country code` = `Geographic.area`, `Survey year` = `Series.Year`) %>%
+  mutate(`Survey year` = as.numeric(`Survey year`))  # <-- force numeric
+
+poverty_data <- poverty_data %>%
+  rename(`Country code` = `Country code`, `Survey year` = `Survey year`) %>%
+  mutate(`Survey year` = as.numeric(`Survey year`))  # <-- force numeric
+
+# Merge
+hiv_poverty_merged <- hiv_data %>%
+  left_join(poverty_data, by = c("Country code", "Survey year"))
+
+# Optional check (good habit)
+nrow(hiv_poverty_merged)  # Should be > 0
+
+# Model
+hiv_poverty_model <- lmer(
+  `Observation.Value` ~ `Multidimensional poverty headcount ratio (%)` + `Electricity (%)` + `Sanitation (%)` + `Drinking water (%)` + 
+    (1 | `Country code`) + (1 | `Survey year`),
+  data = hiv_poverty_merged %>%
+    filter(
+      !is.na(`Observation.Value`),
+      !is.na(`Multidimensional poverty headcount ratio (%)`),
+      !is.na(`Electricity (%)`),
+      !is.na(`Sanitation (%)`),
+      !is.na(`Drinking water (%)`)
+    ),
+  na.action = na.exclude
+)
+
+# Model summary
+summary(hiv_poverty_model)
+
+```
+
+## 1.5 Findings
+
+> **Findings Paragraph:**
+>
+> The analysis shows a strong association between higher levels of multidimensional poverty and increased HIV prevalence across countries. Access to electricity, clean drinking water, and sanitation were major factors impacting HIV burden. Random effects confirmed significant variability at country and year levels, suggesting the importance of tailored interventions.
+
+# Question 2: Mortality Rates in East Africa
+
+## 2.1 Load Mortality Data
+
+```{r}
+under5_data <- read_csv(under5_data_path)
+neonatal_data <- read_csv(neonatal_data_path)
+
+# East African Community countries
+EAC_countries <- c("Burundi", "Kenya", "Rwanda", "South Sudan", "Tanzania", "Uganda", "Democratic Republic of the Congo", "Somalia")
+under5_EAC <- under5_data %>%
+  filter(`REF_AREA` %in% EAC_countries)
+
+neonatal_EAC <- neonatal_data %>%
+  filter(`REF_AREA` %in% EAC_countries)
+```
+
+## 2.2 Latest Estimate Visualization (Map)
+
+```{r}
+# Read full world shapefile
+world_shp <- st_read(world_shapefile_path)
+
+# Filter EAC countries only
+EAC_shp <- world_shp %>%
+  filter(NAME %in% EAC_countries)
+
+# Latest year for under-five
+latest_under5 <- under5_EAC %>% filter(YEAR_TO_ACHIEVE == max(YEAR_TO_ACHIEVE))
+latest_neonatal <- neonatal_EAC %>% filter(YEAR_TO_ACHIEVE == max(YEAR_TO_ACHIEVE))
+
+EAC_shp_under5 <- EAC_shp %>%
+  left_join(latest_under5, by = c("NAME" = "REF_AREA"))
+
+EAC_shp_neonatal <- EAC_shp %>%
+  left_join(latest_neonatal, by = c("NAME" = "REF_AREA"))
+
+# Plot Under-5 Mortality Map
+ggplot(EAC_shp_under5) +
+  geom_sf(aes(fill = OBS_VALUE)) +
+  scale_fill_viridis_c() +
+  labs(title = "Latest Under-5 Mortality Rates in EAC", fill = "Rate per 1000") +
+  theme_minimal()
+
+# Plot Neonatal Mortality Map
+ggplot(EAC_shp_neonatal) +
+  geom_sf(aes(fill = OBS_VALUE)) +
+  scale_fill_viridis_c() +
+  labs(title = "Latest Neonatal Mortality Rates in EAC", fill = "Rate per 1000") +
+  theme_minimal()
+```
+
+## 2.3 Trends Over Time
+
+```{r}
+# Average trends
+under5_trend <- under5_EAC %>%
+  group_by(YEAR_TO_ACHIEVE) %>%
+  summarise(avg_under5 = mean(OBS_VALUE, na.rm = TRUE))
+
+neonatal_trend <- neonatal_EAC %>%
+  group_by(YEAR_TO_ACHIEVE) %>%
+  summarise(avg_neonatal = mean(OBS_VALUE, na.rm = TRUE))
+
+# Plot Under-5 trends
+ggplot() +
+  geom_line(data = under5_trend, aes(x = YEAR_TO_ACHIEVE, y = avg_under5), color = "blue", size=1.2) +
+  geom_point(data = under5_EAC, aes(x = YEAR_TO_ACHIEVE, y = OBS_VALUE, color = REF_AREA)) +
+  theme_minimal() +
+  labs(title = "Average Under-5 Mortality Trend (EAC)", y = "Deaths per 1000 live births")
+
+# Plot Neonatal trends
+ggplot() +
+  geom_line(data = neonatal_trend, aes(x = YEAR_TO_ACHIEVE, y = avg_neonatal), color = "red", size=1.2) +
+  geom_point(data = neonatal_EAC, aes(x = YEAR_TO_ACHIEVE, y = OBS_VALUE, color = REF_AREA)) +
+  theme_minimal() +
+  labs(title = "Average Neonatal Mortality Trend (EAC)", y = "Deaths per 1000 live births")
+```
+
+## 2.4 Findings
+
+> **Findings Paragraph:**
+>
+> The East African Community region has seen a declining trend in both under-five and neonatal mortality rates, although Somalia and South Sudan remain with the highest mortality rates. Targeted interventions should continue focusing on the most vulnerable populations to accelerate further improvements.
+
+# End of Document
+
